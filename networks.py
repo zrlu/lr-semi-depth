@@ -7,18 +7,19 @@ import importlib
 
 
 class conv(nn.Module):
-    def __init__(self, num_in_layers, num_out_layers, kernel_size, stride):
+    def __init__(self, num_in_layers, num_out_layers, kernel_size, stride, activation_fn=F.elu):
         super(conv, self).__init__()
         self.kernel_size = kernel_size
         self.conv_base = nn.Conv2d(num_in_layers, num_out_layers, kernel_size=kernel_size, stride=stride)
         self.normalize = nn.BatchNorm2d(num_out_layers)
+        self.activation_fn = activation_fn
 
     def forward(self, x):
         p = int(np.floor((self.kernel_size-1)/2))
         p2d = (p, p, p, p)
         x = self.conv_base(F.pad(x, p2d))
         x = self.normalize(x)
-        return F.elu(x, inplace=True)
+        return self.activation_fn(x, inplace=True)
 
 
 class convblock(nn.Module):
@@ -204,7 +205,7 @@ class fusion(nn.Module):
 
     def __init__(self):
         super(fusion, self).__init__()
-        self.conv1 = conv(2, 1, 1, 1)
+        self.conv1 = conv(2, 1, 1, 1, activation_fn=F.relu)
 
     def forward(self, disps_L, disps_R):
         return [self.conv1(torch.cat([disps_L[i], disps_R[i]], 1)) for i in range(4)]
@@ -214,24 +215,18 @@ class Discriminator(nn.Module):
 
     def __init__(self, num_in_layers):
         super(Discriminator, self).__init__()
-        self.conv1 = conv(num_in_layers, 64, 4, 2)
-        self.conv2 = conv(64, 64, 2, 2)
-        self.conv3 = conv(64, 128, 2, 2)
-        self.conv4 = conv(128, 256, 2, 2)
-        self.conv5 = conv(256, 512, 2, 2)
-        self.conv6 = conv(512, 1, 1, 1)
-        self.flatten = nn.Flatten(0)
-        self.linear = nn.Linear(512, 1)
+        self.h0 = conv(num_in_layers, 64, 4, 2, activation_fn=F.relu)
+        self.h1 = conv(64, 128, 4, 2, activation_fn=F.relu)
+        self.h2 = conv(128, 256, 4, 2, activation_fn=F.relu)
+        self.h3 = conv(256, 512, 4, 1, activation_fn=F.relu)
+        self.h4 = conv(512, 1, 4, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = self.conv4(x)
-        x = self.conv5(x)
-        x = self.conv6(x)
-        x = self.flatten(x)
-        x = self.linear(x)
+        x = self.h0(x)
+        x = self.h1(x)
+        x = self.h2(x)
+        x = self.h3(x)
+        x = self.h4(x)
         x = self.sigmoid(x)
         return x

@@ -15,7 +15,7 @@ from itertools import chain
 class Model:
 
     def __init__(self, batch_size=4, input_channels=3, use_multiple_gpu=False,
-                       g_learning_rate=1e-5, d_learning_rate=1e-5,
+                       g_learning_rate=1e-4, d_learning_rate=1e-4,
                        model_path='model', device='cuda:0', mode='train', train_dataset_dir='data_scene_flow/training', 
                        val_dataset_dir='data_scene_flow/testing', num_workers=4, do_augmentation=True,
                        output_directory='outputs',
@@ -122,7 +122,7 @@ class Model:
         disps_LR = self.g_RR(images_RR_enc)
         self.disps_L = self.fusion(disps_LL, disps_LR)
 
-        self.images_L_est = [warp_right(self.images_R_est[i], self.disps_L[i]) for i in range(4)]
+        self.images_L_est = [warp_left(self.images_R_est[i], self.disps_L[i]) for i in range(4)]
         
 
     def train(self, epoch):
