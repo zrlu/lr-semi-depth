@@ -18,7 +18,7 @@ class conv(nn.Module):
         p2d = (p, p, p, p)
         x = self.conv_base(F.pad(x, p2d))
         x = self.normalize(x)
-        return F.elu(x, inplace=True)
+        return F.relu(x, inplace=True)
 
 
 class convblock(nn.Module):
@@ -65,7 +65,7 @@ class resconv(nn.Module):
             shortcut = self.conv4(x)
         else:
             shortcut = x
-        return F.elu(self.normalize(x_out + shortcut), inplace=True)
+        return F.relu(self.normalize(x_out + shortcut), inplace=True)
 
 
 def resblock(num_in_layers, num_out_layers, num_blocks, stride):
@@ -91,8 +91,8 @@ class upconv(nn.Module):
 class get_disp(nn.Module):
     def __init__(self, num_in_layers):
         super(get_disp, self).__init__()
-        self.conv1 = nn.Conv2d(num_in_layers, 2, kernel_size=3, stride=1)
-        self.normalize = nn.BatchNorm2d(2)
+        self.conv1 = nn.Conv2d(num_in_layers, 1, kernel_size=3, stride=1)
+        self.normalize = nn.BatchNorm2d(1)
         self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, x):
@@ -103,9 +103,9 @@ class get_disp(nn.Module):
         return 0.3 * self.sigmoid(x)
 
 
-class Resnet50(nn.Module):
-    def __init__(self, num_in_layers):
-        super(Resnet50, self).__init__()
+class Resnet50Encoder(nn.Module):
+    def __init__(self, num_in_layers=3):
+        super(Resnet50Encoder, self).__init__()
         # encoder
         self.conv1 = conv(num_in_layers, 64, 7, 2)  # H/2  -   64D
         self.pool1 = maxpool(3)                     # H/4  -   64D
@@ -113,33 +113,6 @@ class Resnet50(nn.Module):
         self.conv3 = resblock(256, 128, 4, 2)       # H/16 -  512D
         self.conv4 = resblock(512, 256, 6, 2)       # H/32 - 1024D
         self.conv5 = resblock(1024, 512, 3, 2)      # H/64 - 2048D
-
-        # decoder
-        self.upconv6 = upconv(2048, 512, 3, 2)
-        self.iconv6 = conv(1024 + 512, 512, 3, 1)
-
-        self.upconv5 = upconv(512, 256, 3, 2)
-        self.iconv5 = conv(512+256, 256, 3, 1)
-
-        self.upconv4 = upconv(256, 128, 3, 2)
-        self.iconv4 = conv(256+128, 128, 3, 1)
-        self.disp4_layer = get_disp(128)
-
-        self.upconv3 = upconv(128, 64, 3, 2)
-        self.iconv3 = conv(64+64+2, 64, 3, 1)
-        self.disp3_layer = get_disp(64)
-
-        self.upconv2 = upconv(64, 32, 3, 2)
-        self.iconv2 = conv(32+64+2, 32, 3, 1)
-        self.disp2_layer = get_disp(32)
-
-        self.upconv1 = upconv(32, 16, 3, 2)
-        self.iconv1 = conv(16+2, 16, 3, 1)
-        self.disp1_layer = get_disp(16)
-
-        for m in self.modules():
-            if isinstance(m, nn.Conv2d):
-                nn.init.xavier_uniform_(m.weight)
 
     def forward(self, x):
         # encoder
@@ -157,6 +130,42 @@ class Resnet50(nn.Module):
         skip4 = x3
         skip5 = x4
 
+        return x5, skip5, skip4, skip3, skip2, skip1
+
+
+class Resnet50Decoder(nn.Module):
+    def __init__(self, num_in_layers=2048):
+        super(Resnet50Decoder, self).__init__()
+        # decoder
+        self.upconv6 = upconv(num_in_layers, 512, 3, 2)
+        self.iconv6 = conv(1024 + 512, 512, 3, 1)
+
+        self.upconv5 = upconv(512, 256, 3, 2)
+        self.iconv5 = conv(512+256, 256, 3, 1)
+
+        self.upconv4 = upconv(256, 128, 3, 2)
+        self.iconv4 = conv(256+128, 128, 3, 1)
+        self.disp4_layer = get_disp(128)
+
+        self.upconv3 = upconv(128, 64, 3, 2)
+        self.iconv3 = conv(64+64+1, 64, 3, 1)
+        self.disp3_layer = get_disp(64)
+
+        self.upconv2 = upconv(64, 32, 3, 2)
+        self.iconv2 = conv(32+64+1, 32, 3, 1)
+        self.disp2_layer = get_disp(32)
+
+        self.upconv1 = upconv(32, 16, 3, 2)
+        self.iconv1 = conv(16+1, 16, 3, 1)
+        self.disp1_layer = get_disp(16)
+
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.xavier_uniform_(m.weight)
+
+    def forward(self, x):
+        x5, skip5, skip4, skip3, skip2, skip1 = x
+        
         # decoder
         upconv6 = self.upconv6(x5)
         concat6 = torch.cat((upconv6, skip5), 1)
@@ -191,6 +200,17 @@ class Resnet50(nn.Module):
         return self.disp1, self.disp2, self.disp3, self.disp4
 
 
+class fuse(nn.Module):
+
+    def __init__(self):
+        super(fuse, self).__init__()
+        self.conv1 = conv(2, 1, 1, 1)
+
+    def forward(self, disps_L, disps_R):
+        fused = [self.conv1(torch.cat([disps_L[i], disps_R[i]], 1)) for i in range(4)]
+        return fused
+
+
 class Discriminator(nn.Module):
 
     def __init__(self, num_in_layers):
@@ -203,6 +223,7 @@ class Discriminator(nn.Module):
         self.conv6 = conv(512, 1, 1, 1)
         self.flatten = nn.Flatten(0)
         self.linear = nn.Linear(512, 1)
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         x = self.conv1(x)
@@ -213,4 +234,5 @@ class Discriminator(nn.Module):
         x = self.conv6(x)
         x = self.flatten(x)
         x = self.linear(x)
+        x = self.sigmoid(x)
         return x

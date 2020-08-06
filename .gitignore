@@ -2,6 +2,7 @@
 __pycache__
 model
 data_scene_flow
+data_scene_flow_small
 outputs
 model
 .ipynb_checkpoints

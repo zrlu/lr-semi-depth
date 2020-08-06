@@ -4,6 +4,7 @@ import os
 from torch.utils.data import DataLoader, ConcatDataset
 import torch.nn.functional as F
 import numpy as np
+from networks import conv
 
 def to_device(input, device):
     if torch.is_tensor(input):
@@ -18,7 +19,7 @@ def to_device(input, device):
         raise TypeError(f"Input must contain tensor, dict or list, found {type(input)}")
 
 
-def warp(img, disp):
+def apply_disp(img, disp):
 
     batch_size, _, height, width = img.size()
 
@@ -37,12 +38,22 @@ def warp(img, disp):
     return output
 
 
-def post_process_disparity(disp):
-    (_, h, w) = disp.shape
-    l_disp = disp[0, :, :]
-    r_disp = np.fliplr(disp[1, :, :])
-    m_disp = 0.5 * (l_disp + r_disp)
-    (l, _) = np.meshgrid(np.linspace(0, 1, w), np.linspace(0, 1, h))
-    l_mask = 1.0 - np.clip(20 * (l - 0.05), 0, 1)
-    r_mask = np.fliplr(l_mask)
-    return r_mask * l_disp + l_mask * r_disp + (1.0 - l_mask - r_mask) * m_disp
+def warp_right(left, disp):
+    return apply_disp(left, disp)
+
+
+def warp_left(right, disp):
+    return apply_disp(right, -disp)
+
+
+def scale_pyramid(img):
+    scaled_imgs = [img]
+    s = img.size()
+    h = s[2]
+    w = s[3]
+    for i in range(3):
+        ratio = 2 ** (i + 1)
+        nh = h // ratio
+        nw = w // ratio
+        scaled_imgs.append(F.interpolate(img, size=[nh, nw], mode='bilinear', align_corners=True))
+    return scaled_imgs

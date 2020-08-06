@@ -5,28 +5,49 @@ import numpy as np
 import torch.optim as optim
 import skimage.transform
 from torchvision import models
-from networks import Resnet50, Discriminator
-from loss import MonodepthLoss, GANLoss
+from networks import Resnet50Encoder, Resnet50Decoder, Discriminator, fuse as fuse_func
+from loss import FcRecLoss, FcGANLoss, FcConLoss
 from torch.utils.data import DataLoader, ConcatDataset
 from dataset import KITTI, prepare_dataloader
 from os import path, makedirs
-from utils import warp, post_process_disparity, to_device
+from utils import warp_left, warp_right, to_device
 import numpy as np
+from itertools import chain
 
 class Model:
 
-    def __init__(self, batch_size=4, input_channels=3,
+    def __init__(self, batch_size=3, input_channels=3, use_multiple_gpu=False,
                        g_learning_rate=1e-4, d_learning_rate=1e-4,
                        model_path='model', device='cuda:0', mode='train', train_dataset_dir='data_scene_flow/training', 
                        val_dataset_dir='data_scene_flow/testing', num_workers=4, do_augmentation=True,
                        output_directory='outputs',
                        input_height=256, input_width=512, augment_parameters=[0.8, 1.2, 0.5, 2.0, 0.8, 1.2]):
+                       
         self.batch_size = batch_size
         self.input_channels = input_channels
         self.model_path = model_path
         self.device = device
-        self.g = Resnet50(self.input_channels).to(self.device)
-        self.d = Discriminator(self.input_channels).to(self.device)
+        self.use_multiple_gpu = use_multiple_gpu
+
+        self.e_L = Resnet50Encoder().to(self.device)
+        self.e_R = Resnet50Encoder().to(self.device)
+        self.g_LL = Resnet50Decoder().to(self.device)
+        self.g_RL = Resnet50Decoder().to(self.device)
+        self.g_LR = Resnet50Decoder().to(self.device)
+        self.g_RR = Resnet50Decoder().to(self.device)
+        self.d_L = Discriminator(self.input_channels).to(self.device)
+        self.d_R = Discriminator(self.input_channels).to(self.device)
+
+        if self.use_multiple_gpu:
+            self.e_L = torch.nn.DataParallel(self.e_L)
+            self.e_R = torch.nn.DataParallel(self.e_R)
+            self.g_LL = torch.nn.DataParallel(self.g_LL)
+            self.g_RL = torch.nn.DataParallel(self.g_RL)
+            self.g_LR = torch.nn.DataParallel(self.g_LR)
+            self.g_RR = torch.nn.DataParallel(self.g_RR)
+            self.d_L = torch.nn.DataParallel(self.d_L)
+            self.d_R = torch.nn.DataParallel(self.d_R)
+
         self.g_learning_rate=g_learning_rate
         self.d_learning_rate=d_learning_rate
         self.mode = mode
@@ -38,21 +59,27 @@ class Model:
         self.g_best_val_loss = float('inf')
         self.num_workers = num_workers
         self.do_augmentation = do_augmentation
+        self.fuse = fuse_func().to(self.device)
 
         if self.mode == 'train':
-            self.criterion = MonodepthLoss(
-                n=4,
-                SSIM_w=0.85,
-                disp_gradient_w=0.1, lr_w=1).to(self.device)
-            self.g_optimizer = optim.Adam(self.g.parameters(), lr=self.g_learning_rate)
-            self.d_optimizer = optim.Adam(self.d.parameters(), lr=self.d_learning_rate)
+            self.criterion_rec = FcRecLoss().to(self.device)
+            self.criterion_GAN = FcGANLoss().to(self.device)
+            self.criterion_con = FcConLoss().to(self.device)
+            
+            self.g_optimizer = optim.Adam(
+                chain(
+                    self.e_L.parameters(), self.e_R.parameters(),
+                    self.g_LL.parameters(), self.g_RL.parameters(),
+                    self.g_LR.parameters(), self.g_RR.parameters()), 
+                lr=self.g_learning_rate)
+            self.d_optimizer = optim.Adam(chain(self.d_L.parameters(), self.d_R.parameters()), lr=self.d_learning_rate)
             self.val_n_img, self.val_loader = prepare_dataloader(self.val_dataset_dir, self.mode, self.augment_parameters,
-                                                False, self.batch_size,
+                                                False, 1,
                                                 (self.input_height, self.input_width),
                                                 self.num_workers)
-            self.criterion_GAN = GANLoss().to(self.device)
         else:
             self.augment_parameters = None
+            self.do_augmentation = False
 
         self.n_img, self.loader = prepare_dataloader(self.train_dataset_dir, self.mode,
                                                     self.augment_parameters,
@@ -64,47 +91,74 @@ class Model:
             torch.cuda.synchronize()
 
 
+    def compute(self, left, right):
+        left_L_encoded = self.e_L(left)
+        right_L_encoded = self.e_L(right)
+
+        disps_RL = self.g_LL(left_L_encoded)
+        disps_RR = self.g_LR(right_L_encoded)
+        disps_R = self.fuse(disps_RL, disps_RR)
+        
+        image_R_fake = warp_right(left, disps_R[0])
+
+        left_R_encoded = self.e_R(left)
+        right_R_encoded = self.e_R(image_R_fake)
+
+        disps_LL = self.g_RL(left_R_encoded)
+        disps_LR = self.g_RR(right_R_encoded)
+        disps_L = self.fuse(disps_LL, disps_LR)
+
+        image_L_fake = warp_left(right, disps_L[0])
+
+        return disps_L, disps_R, image_L_fake, image_R_fake
+
+
     def train(self, epoch):
 
         c_time = time.time()
         g_running_loss = 0.0
         d_running_loss = 0.0
 
-        self.g.train()
+        self.d_L.train()
+        self.d_R.train()
+
         for data in self.loader:
             data = to_device(data, self.device)
-            left = data['left_image']
-            right = data['right_image']
-
-            disps = self.g(left)
-            self.g_optimizer.zero_grad()
-            loss_data = self.criterion(disps, [left, right])
-            fake_right = warp(left, disps[0])
-            pred_fake_right = self.d(fake_right)
-            loss_fake_right = self.criterion_GAN(pred_fake_right, True)
-            g_loss = loss_data + loss_fake_right
-            g_loss.backward()
-            g_running_loss += loss_data.item()
-            self.g_optimizer.step()
-
-        self.d.train()
-        for data in self.loader:
-            data = to_device(data, self.device)
-            left = data['left_image']
-            right = data['right_image']
+            left, right= data['left_image'], data['right_image']
 
             self.d_optimizer.zero_grad()
-            disps = self.g(left)
-            fake_right = warp(left, disps[0])
-            pred_fake_right = self.d(fake_right)
-            pred_real_left  = self.d(left.detach())
-            loss_fake_right = self.criterion_GAN(pred_fake_right, False)
-            loss_real_left  = self.criterion_GAN(pred_real_left, True)
-            d_loss = 0.5*(loss_fake_right + loss_real_left)
+            disps_L, disps_R, image_L_fake, image_R_fake = self.compute(left, right)
+            d_loss_GAN = self.criterion_GAN(left, image_R_fake, right, image_L_fake)
+            d_loss = 0.1*d_loss_GAN
+
             d_loss.backward()
             d_running_loss += d_loss.item()
             self.d_optimizer.step()
         
+        self.e_L.train()
+        self.e_R.train()
+        self.g_LL.train()
+        self.g_RL.train()
+        self.g_LR.train()
+        self.g_RR.train()
+
+        for data in self.loader:
+            data = to_device(data, self.device)
+            left, right= data['left_image'], data['right_image']
+
+            disps_L, disps_R, image_L_fake, image_R_fake = self.compute(left, right)
+
+            self.g_optimizer.zero_grad()
+
+            g_loss_rec = self.criterion_rec(disps_L, disps_R, left, right)
+            g_loss_con = self.criterion_con(disps_L, disps_R)
+            g_loss = g_loss_rec + 0.1*g_loss_con
+            g_loss.backward()
+
+            g_running_loss += g_loss.item()
+            
+            self.g_optimizer.step()
+
         g_running_loss /= self.n_img / self.batch_size
         d_running_loss /= self.n_img / self.batch_size
         
@@ -124,29 +178,63 @@ class Model:
         if not path.exists(self.model_path):
             makedirs(self.model_path, exist_ok=True)
         if best:
-            torch.save(self.g.state_dict(), self.path_for('g.nn.best'))
-            torch.save(self.d.state_dict(), self.path_for('d.nn.best'))
+            torch.save(self.e_L.state_dict(), self.path_for('el.nn.best'))
+            torch.save(self.e_R.state_dict(), self.path_for('er.nn.best'))
+            torch.save(self.g_LL.state_dict(), self.path_for('gll.nn.best'))
+            torch.save(self.g_RL.state_dict(), self.path_for('grl.nn.best'))
+            torch.save(self.g_LR.state_dict(), self.path_for('glr.nn.best'))
+            torch.save(self.g_RR.state_dict(), self.path_for('grr.nn.best'))
+            torch.save(self.d_L.state_dict(), self.path_for('dl.nn.best'))
+            torch.save(self.d_R.state_dict(), self.path_for('dr.nn.best'))
         else:
-            torch.save(self.g.state_dict(), self.path_for('g.nn'))
-            torch.save(self.d.state_dict(), self.path_for('d.nn'))
+            torch.save(self.e_L.state_dict(), self.path_for('el.nn'))
+            torch.save(self.e_R.state_dict(), self.path_for('er.nn'))
+            torch.save(self.g_LL.state_dict(), self.path_for('gll.nn'))
+            torch.save(self.g_RL.state_dict(), self.path_for('grl.nn'))
+            torch.save(self.g_LR.state_dict(), self.path_for('glr.nn'))
+            torch.save(self.g_RR.state_dict(), self.path_for('grr.nn'))
+            torch.save(self.d_L.state_dict(), self.path_for('dl.nn'))
+            torch.save(self.d_R.state_dict(), self.path_for('dr.nn'))
 
     def load(self, best=False):
         print('load', 'best', best)
         if best:
-            self.g.load_state_dict(torch.load(self.path_for('g.nn.best')))
-            self.d.load_state_dict(torch.load(self.path_for('d.nn.best')))
+            self.e_L.load_state_dict(torch.load(self.path_for('el.nn.best')))
+            self.e_R.load_state_dict(torch.load(self.path_for('er.nn.best')))
+            self.g_LL.load_state_dict(torch.load(self.path_for('gll.nn.best')))
+            self.g_RL.load_state_dict(torch.load(self.path_for('grl.nn.best')))
+            self.g_LR.load_state_dict(torch.load(self.path_for('glr.nn.best')))
+            self.g_RR.load_state_dict(torch.load(self.path_for('grr.nn.best')))
+            self.d_L.load_state_dict(torch.load(self.path_for('dl.nn.best')))
+            self.d_R.load_state_dict(torch.load(self.path_for('dr.nn.best')))
         else:
-            self.g.load_state_dict(torch.load(self.path_for('g.nn')))
-            self.d.load_state_dict(torch.load(self.path_for('d.nn')))
+            self.e_L.load_state_dict(torch.load(self.path_for('el.nn')))
+            self.e_R.load_state_dict(torch.load(self.path_for('er.nn')))
+            self.g_LL.load_state_dict(torch.load(self.path_for('gll.nn')))
+            self.g_RL.load_state_dict(torch.load(self.path_for('grl.nn')))
+            self.g_LR.load_state_dict(torch.load(self.path_for('glr.nn')))
+            self.g_RR.load_state_dict(torch.load(self.path_for('grr.nn')))
+            self.d_L.load_state_dict(torch.load(self.path_for('dl.nn')))
+            self.d_R.load_state_dict(torch.load(self.path_for('dr.nn')))
+    
+
+    def combine_2_disps(self, disp_L, disp_R):
+        return 0.5*(disp_L + warp_left(disp_R, disp_L))
+
 
     def test(self):
-        self.g.eval()
+
+        self.e_L.eval()
+        self.e_R.eval()
+        self.g_LL.eval()
+        self.g_RL.eval()
+        self.g_LR.eval()
+        self.g_RR.eval()
 
         g_running_val_loss = 0.0
         d_running_val_loss = 0.0
 
         disparities = np.zeros((self.n_img, self.input_height, self.input_width), dtype=np.float32)
-        disparities_pp = np.zeros((self.n_img, self.input_height, self.input_width), dtype=np.float32)
 
         ref_img = None
 
@@ -154,27 +242,30 @@ class Model:
             for i, data in enumerate(self.val_loader):
                 
                 data = to_device(data, self.device)
-                left = data['left_image']
+                left, right= data['left_image'], data['right_image']
                 if i == 0:
                     ref_img = left[0].cpu().numpy()
 
-                right = data['right_image']
-                disps = self.g(left)
-                g_val_loss = self.criterion(disps, [left, right])
-                g_running_val_loss += g_val_loss.item()
+                disps_L, disps_R, image_L_fake, image_R_fake = self.compute(left, right)
+                
+                g_loss_rec = self.criterion_rec(disps_L, disps_R, left, right)
+                g_loss_con = self.criterion_con(disps_L, disps_R)
+                g_loss = g_loss_rec + g_loss_con
+                g_running_val_loss += g_loss.item()
 
-                pred_fake_right = self.d(warp(left, disps[0]))
-                pred_real_left  = self.d(left.detach())
-                loss_fake_right = self.criterion_GAN(pred_fake_right, False)
-                loss_real_left  = self.criterion_GAN(pred_real_left, True)
-                d_val_loss = 0.5*(loss_fake_right + loss_real_left)
-                d_running_val_loss += d_val_loss.item()
+                d_loss_GAN = 0.1*self.criterion_GAN(left, image_R_fake, right, image_L_fake)
+                d_loss = d_loss_GAN
+                d_running_val_loss += d_loss.item()
 
-                disp = disps[0][:, 0, :, :].unsqueeze(1)
-                disparities[i] = disp[0].squeeze().cpu().numpy()
-                disparities_pp[i] =  post_process_disparity(disps[0][:, 0, :, :].cpu().numpy())
+                disp_L = disps_L[0]
+                disp_R = disps_R[0]
 
-            g_running_val_loss /= self.val_n_img / self.batch_size
+                disp = self.combine_2_disps(disp_L, disp_R).cpu().numpy()[:, 0, :, :]
+
+                disparities[i] = disp
+
+            g_running_val_loss /= self.val_n_img
+            d_running_val_loss /= self.val_n_img
 
             model_saved = '[*]'
             if g_running_val_loss < self.g_best_val_loss:
@@ -188,4 +279,4 @@ class Model:
                 model_saved
             )
         
-        return disparities, disparities_pp, ref_img
+        return disparities, ref_img
