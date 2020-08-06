@@ -72,7 +72,7 @@ class Model:
                 lr=self.g_learning_rate)
             self.d_optimizer = optim.Adam(chain(self.d_L.parameters(), self.d_R.parameters()), lr=self.d_learning_rate)
             self.val_n_img, self.val_loader = prepare_dataloader(self.val_dataset_dir, self.mode, self.augment_parameters,
-                                                False, 1,
+                                                False, self.batch_size,
                                                 (self.input_height, self.input_width),
                                                 self.num_workers)
         else:
@@ -90,15 +90,16 @@ class Model:
 
 
     def compute_d_loss(self):
-        d_loss_GAN = self.criterion_GAN(self.images_L, self.images_L_est, self.images_R, self.images_R_est)
+        d_loss_GAN = self.criterion_GAN(self.images_R, self.images_R_est)
         d_loss = 0.1*d_loss_GAN
         return d_loss
 
     
     def compute_g_loss(self):
-        g_loss_rec = self.criterion_rec(self.images_L, self.images_L_est, self.images_R, self.images_R_est)
-        g_loss_con = self.criterion_con(self.disps_L, self.disps_R)
-        g_loss = g_loss_rec + 0.1*g_loss_con
+        g_loss_rec = self.criterion_rec(self.images_R, self.images_R_est)
+        # g_loss_con = self.criterion_con(self.disps_L, self.disps_R)
+        # g_loss = g_loss_rec + 0.1*g_loss_con
+        g_loss = g_loss_rec
         return g_loss   
 
 
@@ -115,14 +116,14 @@ class Model:
 
         self.images_R_est = [warp_right(self.images_L[i], self.disps_R[i]) for i in range(4)]
         
-        images_RL_enc = self.e_R(left)
-        images_RR_enc = self.e_R(right)
+        # images_RL_enc = self.e_R(left)
+        # images_RR_enc = self.e_R(right)
 
-        disps_LL = self.g_RL(images_RL_enc)
-        disps_LR = self.g_RR(images_RR_enc)
-        self.disps_L = self.fusion(disps_LL, disps_LR)
+        # disps_LL = self.g_RL(images_RL_enc)
+        # disps_LR = self.g_RR(images_RR_enc)
+        # self.disps_L = self.fusion(disps_LL, disps_LR)
 
-        self.images_L_est = [warp_left(self.images_R_est[i], self.disps_L[i]) for i in range(4)]
+        # self.images_L_est = [warp_left(self.images_R_est[i], self.disps_L[i]) for i in range(4)]
         
 
     def train(self, epoch):
@@ -258,19 +259,23 @@ class Model:
                 d_running_val_loss += d_loss.item()
                 g_running_val_loss += g_loss.item()
 
-                disp_L = self.disps_L[0]
-                disp_R = self.disps_R[0]
+                # disp_L = self.disps_L[0]
+                # disp_R = self.disps_R[0]
 
-                disp = self.combine_2_disps(disp_L, disp_R).cpu().numpy()[:, 0, :, :]
-                disp_L = disp_L.cpu().numpy()[:, 0, :, :]
-                disp_R = disp_R.cpu().numpy()[:, 0, :, :]
+                # disp = self.combine_2_disps(disp_L, disp_R).cpu().numpy()[:, 0, :, :]
+                # disp_L = disp_L.cpu().numpy()[:, 0, :, :]
+                # disp_R = disp_R.cpu().numpy()[:, 0, :, :]
 
-                disparities[i] = disp
-                disparities_L[i] = disp_L
-                disparities_R[i] = disp_R
+                # disparities[i] = disp
+                # disparities_L[i] = disp_L
+                # disparities_R[i] = disp_R
 
-            g_running_val_loss /= self.val_n_img
-            d_running_val_loss /= self.val_n_img
+                D = self.disps_R[0].cpu().numpy()[:, 0, :, :]
+                ndata, _, _ = D.shape
+                disparities_R[i*self.batch_size:i*self.batch_size+ndata] = D
+
+            g_running_val_loss /= self.val_n_img / self.batch_size
+            d_running_val_loss /= self.val_n_img / self.batch_size
 
             model_saved = '[*]'
             if g_running_val_loss < self.g_best_val_loss:

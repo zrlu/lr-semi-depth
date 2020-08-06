@@ -11,10 +11,12 @@ class FcRecLoss(nn.Module):
     def __init__(self):
         super(FcRecLoss, self).__init__()
 
-    def forward(self, images_L, images_L_est, images_R, images_R_est):
+    def forward(self, images_R, images_R_est):
         l1_LR = [torch.mean(torch.abs(images_R[i] - images_R_est[i])) for i in range(4)]
-        l1_RL = [torch.mean(torch.abs(images_L[i] - images_L_est[i])) for i in range(4)]
-        return sum(l1_LR + l1_RL)
+        # l1_RL = [torch.mean(torch.abs(images_L[i] - images_L_est[i])) for i in range(4)]
+        # return sum(l1_LR + l1_RL)
+        # return sum(l1_LR + l1_RL)
+        return sum(l1_LR)
 
 
 class FcConLoss(nn.Module):
@@ -40,10 +42,10 @@ class FcGANLoss(nn.Module):
         self.register_buffer('fake_label', torch.tensor(0.0))
         self.loss = nn.BCEWithLogitsLoss()
 
-    def forward(self, images_L, images_L_est, images_R, images_R_est):
-        loss_L_real = [self.loss(images_L[i], self.real_label.expand_as(images_L[i])) for i in range(4)]
-        loss_L_fake = [self.loss(images_L_est[i], self.fake_label.expand_as(images_L_est[i])) for i in range(4)]
+    def forward(self, images_R, images_R_est):
+        # loss_L_real = [self.loss(images_L[i], self.real_label.expand_as(images_L[i])) for i in range(4)]
+        # loss_L_fake = [self.loss(images_L_est[i], self.fake_label.expand_as(images_L_est[i])) for i in range(4)]
         loss_R_real = [self.loss(images_R[i], self.real_label.expand_as(images_R[i])) for i in range(4)]
         loss_R_fake = [self.loss(images_R_est[i], self.fake_label.expand_as(images_R_est[i])) for i in range(4)]
-        return sum(loss_L_real + loss_L_fake + loss_R_real + loss_R_fake)
-        
+        # return sum(loss_L_real + loss_L_fake + loss_R_real + loss_R_fake)
+        return sum(loss_R_real + loss_R_fake)
