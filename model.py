@@ -3,8 +3,6 @@ import time
 import torch
 import numpy as np
 import torch.optim as optim
-import skimage.transform
-from torchvision import models
 from networks import Resnet50Encoder, Resnet50Decoder, Discriminator, fuse as fuse_func
 from loss import FcRecLoss, FcGANLoss, FcConLoss
 from torch.utils.data import DataLoader, ConcatDataset
@@ -16,7 +14,7 @@ from itertools import chain
 
 class Model:
 
-    def __init__(self, batch_size=3, input_channels=3, use_multiple_gpu=False,
+    def __init__(self, batch_size=4, input_channels=3, use_multiple_gpu=False,
                        g_learning_rate=1e-4, d_learning_rate=1e-4,
                        model_path='model', device='cuda:0', mode='train', train_dataset_dir='data_scene_flow/training', 
                        val_dataset_dir='data_scene_flow/testing', num_workers=4, do_augmentation=True,
