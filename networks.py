@@ -18,7 +18,7 @@ class conv(nn.Module):
         p2d = (p, p, p, p)
         x = self.conv_base(F.pad(x, p2d))
         x = self.normalize(x)
-        return F.relu(x, inplace=True)
+        return F.elu(x, inplace=True)
 
 
 class convblock(nn.Module):
@@ -55,8 +55,8 @@ class resconv(nn.Module):
         self.normalize = nn.BatchNorm2d(4*num_out_layers)
 
     def forward(self, x):
-        # do_proj = x.size()[1] != self.num_out_layers or self.stride == 2
-        do_proj = True
+        do_proj = x.size()[1] != self.num_out_layers or self.stride == 2
+        # do_proj = True
         shortcut = []
         x_out = self.conv1(x)
         x_out = self.conv2(x_out)
@@ -65,7 +65,7 @@ class resconv(nn.Module):
             shortcut = self.conv4(x)
         else:
             shortcut = x
-        return F.relu(self.normalize(x_out + shortcut), inplace=True)
+        return F.elu(self.normalize(x_out + shortcut), inplace=True)
 
 
 def resblock(num_in_layers, num_out_layers, num_blocks, stride):
@@ -165,7 +165,7 @@ class Resnet50Decoder(nn.Module):
 
     def forward(self, x):
         x5, skip5, skip4, skip3, skip2, skip1 = x
-        
+
         # decoder
         upconv6 = self.upconv6(x5)
         concat6 = torch.cat((upconv6, skip5), 1)
@@ -200,15 +200,14 @@ class Resnet50Decoder(nn.Module):
         return self.disp1, self.disp2, self.disp3, self.disp4
 
 
-class fuse(nn.Module):
+class fusion(nn.Module):
 
     def __init__(self):
-        super(fuse, self).__init__()
+        super(fusion, self).__init__()
         self.conv1 = conv(2, 1, 1, 1)
 
     def forward(self, disps_L, disps_R):
-        fused = [self.conv1(torch.cat([disps_L[i], disps_R[i]], 1)) for i in range(4)]
-        return fused
+        return [self.conv1(torch.cat([disps_L[i], disps_R[i]], 1)) for i in range(4)]
 
 
 class Discriminator(nn.Module):

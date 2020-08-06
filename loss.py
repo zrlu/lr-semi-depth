@@ -11,12 +11,9 @@ class FcRecLoss(nn.Module):
     def __init__(self):
         super(FcRecLoss, self).__init__()
 
-    def forward(self, disps_L, disps_R, image_L, image_R):
-        images_L = scale_pyramid(image_L)
-        images_R = scale_pyramid(image_R)
-        images_R_fake = [warp_right(images_L[i], disps_R[i]) for i in range(4)]
-        l1_LR = [torch.mean(torch.abs(images_R[i] - images_R_fake[i])) for i in range(4)]
-        l1_RL = [torch.mean(torch.abs(images_L[i] - warp_left(images_R_fake[i], disps_L[i]))) for i in range(4)]
+    def forward(self, images_L, images_L_est, images_R, images_R_est):
+        l1_LR = [torch.mean(torch.abs(images_R[i] - images_R_est[i])) for i in range(4)]
+        l1_RL = [torch.mean(torch.abs(images_L[i] - images_L_est[i])) for i in range(4)]
         return sum(l1_LR + l1_RL)
 
 
@@ -43,10 +40,10 @@ class FcGANLoss(nn.Module):
         self.register_buffer('fake_label', torch.tensor(0.0))
         self.loss = nn.BCEWithLogitsLoss()
 
-    def forward(self, image_L_real, image_R_fake, image_R_real, image_L_fake):
-        loss_L_real = self.loss(image_L_real, self.real_label.expand_as(image_L_real))
-        loss_L_fake = self.loss(image_L_fake, self.fake_label.expand_as(image_L_fake))
-        loss_R_real = self.loss(image_R_real, self.real_label.expand_as(image_R_real))
-        loss_R_fake = self.loss(image_R_fake, self.fake_label.expand_as(image_R_fake))
-        return loss_L_real + loss_L_fake + loss_R_real + loss_R_fake
+    def forward(self, images_L, images_L_est, images_R, images_R_est):
+        loss_L_real = [self.loss(images_L[i], self.real_label.expand_as(images_L[i])) for i in range(4)]
+        loss_L_fake = [self.loss(images_L_est[i], self.fake_label.expand_as(images_L_est[i])) for i in range(4)]
+        loss_R_real = [self.loss(images_R[i], self.real_label.expand_as(images_R[i])) for i in range(4)]
+        loss_R_fake = [self.loss(images_R_est[i], self.fake_label.expand_as(images_R_est[i])) for i in range(4)]
+        return sum(loss_L_real + loss_L_fake + loss_R_real + loss_R_fake)
         

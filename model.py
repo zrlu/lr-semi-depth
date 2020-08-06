@@ -3,24 +3,24 @@ import time
 import torch
 import numpy as np
 import torch.optim as optim
-from networks import Resnet50Encoder, Resnet50Decoder, Discriminator, fuse as fuse_func
+from networks import Resnet50Encoder, Resnet50Decoder, Discriminator, fusion as fusion_func
 from loss import FcRecLoss, FcGANLoss, FcConLoss
 from torch.utils.data import DataLoader, ConcatDataset
 from dataset import KITTI, prepare_dataloader
 from os import path, makedirs
-from utils import warp_left, warp_right, to_device
+from utils import warp_left, warp_right, to_device, scale_pyramid
 import numpy as np
 from itertools import chain
 
 class Model:
 
     def __init__(self, batch_size=4, input_channels=3, use_multiple_gpu=False,
-                       g_learning_rate=1e-4, d_learning_rate=1e-4,
+                       g_learning_rate=1e-5, d_learning_rate=1e-5,
                        model_path='model', device='cuda:0', mode='train', train_dataset_dir='data_scene_flow/training', 
                        val_dataset_dir='data_scene_flow/testing', num_workers=4, do_augmentation=True,
                        output_directory='outputs',
                        input_height=256, input_width=512, augment_parameters=[0.8, 1.2, 0.5, 2.0, 0.8, 1.2]):
-                       
+
         self.batch_size = batch_size
         self.input_channels = input_channels
         self.model_path = model_path
@@ -57,7 +57,7 @@ class Model:
         self.g_best_val_loss = float('inf')
         self.num_workers = num_workers
         self.do_augmentation = do_augmentation
-        self.fuse = fuse_func().to(self.device)
+        self.fusion = fusion_func().to(self.device)
 
         if self.mode == 'train':
             self.criterion_rec = FcRecLoss().to(self.device)
@@ -89,27 +89,41 @@ class Model:
             torch.cuda.synchronize()
 
 
+    def compute_d_loss(self):
+        d_loss_GAN = self.criterion_GAN(self.images_L, self.images_L_est, self.images_R, self.images_R_est)
+        d_loss = 0.1*d_loss_GAN
+        return d_loss
+
+    
+    def compute_g_loss(self):
+        g_loss_rec = self.criterion_rec(self.images_L, self.images_L_est, self.images_R, self.images_R_est)
+        g_loss_con = self.criterion_con(self.disps_L, self.disps_R)
+        g_loss = g_loss_rec + 0.1*g_loss_con
+        return g_loss   
+
+
     def compute(self, left, right):
-        left_L_encoded = self.e_L(left)
-        right_L_encoded = self.e_L(right)
+        image_LL_enc = self.e_L(left)
+        image_LR_enc = self.e_L(right)
 
-        disps_RL = self.g_LL(left_L_encoded)
-        disps_RR = self.g_LR(right_L_encoded)
-        disps_R = self.fuse(disps_RL, disps_RR)
+        self.images_L = scale_pyramid(left)
+        self.images_R = scale_pyramid(right)
+
+        disps_RL = self.g_LL(image_LL_enc)
+        disps_RR = self.g_LR(image_LR_enc)
+        self.disps_R = self.fusion(disps_RL, disps_RR)
+
+        self.images_R_est = [warp_right(self.images_L[i], self.disps_R[i]) for i in range(4)]
         
-        image_R_fake = warp_right(left, disps_R[0])
+        images_RL_enc = self.e_R(left)
+        images_RR_enc = self.e_R(right)
 
-        left_R_encoded = self.e_R(left)
-        right_R_encoded = self.e_R(image_R_fake)
+        disps_LL = self.g_RL(images_RL_enc)
+        disps_LR = self.g_RR(images_RR_enc)
+        self.disps_L = self.fusion(disps_LL, disps_LR)
 
-        disps_LL = self.g_RL(left_R_encoded)
-        disps_LR = self.g_RR(right_R_encoded)
-        disps_L = self.fuse(disps_LL, disps_LR)
-
-        image_L_fake = warp_left(right, disps_L[0])
-
-        return disps_L, disps_R, image_L_fake, image_R_fake
-
+        self.images_L_est = [warp_right(self.images_R_est[i], self.disps_L[i]) for i in range(4)]
+        
 
     def train(self, epoch):
 
@@ -125,10 +139,8 @@ class Model:
             left, right= data['left_image'], data['right_image']
 
             self.d_optimizer.zero_grad()
-            disps_L, disps_R, image_L_fake, image_R_fake = self.compute(left, right)
-            d_loss_GAN = self.criterion_GAN(left, image_R_fake, right, image_L_fake)
-            d_loss = 0.1*d_loss_GAN
-
+            self.compute(left, right)
+            d_loss = self.compute_d_loss()
             d_loss.backward()
             d_running_loss += d_loss.item()
             self.d_optimizer.step()
@@ -144,17 +156,11 @@ class Model:
             data = to_device(data, self.device)
             left, right= data['left_image'], data['right_image']
 
-            disps_L, disps_R, image_L_fake, image_R_fake = self.compute(left, right)
-
             self.g_optimizer.zero_grad()
-
-            g_loss_rec = self.criterion_rec(disps_L, disps_R, left, right)
-            g_loss_con = self.criterion_con(disps_L, disps_R)
-            g_loss = g_loss_rec + 0.1*g_loss_con
+            self.compute(left, right)
+            g_loss = self.compute_g_loss()
             g_loss.backward()
-
             g_running_loss += g_loss.item()
-            
             self.g_optimizer.step()
 
         g_running_loss /= self.n_img / self.batch_size
@@ -233,6 +239,8 @@ class Model:
         d_running_val_loss = 0.0
 
         disparities = np.zeros((self.n_img, self.input_height, self.input_width), dtype=np.float32)
+        disparities_L = np.zeros((self.n_img, self.input_height, self.input_width), dtype=np.float32)
+        disparities_R = np.zeros((self.n_img, self.input_height, self.input_width), dtype=np.float32)
 
         ref_img = None
 
@@ -244,23 +252,22 @@ class Model:
                 if i == 0:
                     ref_img = left[0].cpu().numpy()
 
-                disps_L, disps_R, image_L_fake, image_R_fake = self.compute(left, right)
-                
-                g_loss_rec = self.criterion_rec(disps_L, disps_R, left, right)
-                g_loss_con = self.criterion_con(disps_L, disps_R)
-                g_loss = g_loss_rec + g_loss_con
+                self.compute(left, right)
+                g_loss = self.compute_g_loss()
+                d_loss = self.compute_d_loss()
+                d_running_val_loss += d_loss.item()
                 g_running_val_loss += g_loss.item()
 
-                d_loss_GAN = 0.1*self.criterion_GAN(left, image_R_fake, right, image_L_fake)
-                d_loss = d_loss_GAN
-                d_running_val_loss += d_loss.item()
-
-                disp_L = disps_L[0]
-                disp_R = disps_R[0]
+                disp_L = self.disps_L[0]
+                disp_R = self.disps_R[0]
 
                 disp = self.combine_2_disps(disp_L, disp_R).cpu().numpy()[:, 0, :, :]
+                disp_L = disp_L.cpu().numpy()[:, 0, :, :]
+                disp_R = disp_R.cpu().numpy()[:, 0, :, :]
 
                 disparities[i] = disp
+                disparities_L[i] = disp_L
+                disparities_R[i] = disp_R
 
             g_running_val_loss /= self.val_n_img
             d_running_val_loss /= self.val_n_img
@@ -277,4 +284,4 @@ class Model:
                 model_saved
             )
         
-        return disparities, ref_img
+        return disparities, disparities_L, disparities_R, ref_img
