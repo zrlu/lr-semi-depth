@@ -24,10 +24,8 @@ def apply_disp(img, disp):
     batch_size, _, height, width = img.size()
 
     # Original coordinates of pixels
-    x_base = torch.linspace(0, 1, width).repeat(batch_size,
-                height, 1).type_as(img)
-    y_base = torch.linspace(0, 1, height).repeat(batch_size,
-                width, 1).transpose(1, 2).type_as(img)
+    x_base = torch.linspace(0, 1, width).repeat(batch_size, height, 1).type_as(img)
+    y_base = torch.linspace(0, 1, height).repeat(batch_size, width, 1).transpose(1, 2).type_as(img)
 
     # Apply shift in X direction
     x_shifts = disp[:, 0, :, :]  # Disparity is passed in NCHW format with 1 channel
@@ -57,3 +55,17 @@ def scale_pyramid(img):
         nw = w // ratio
         scaled_imgs.append(F.interpolate(img, size=[nh, nw], mode='bilinear', align_corners=True))
     return scaled_imgs
+
+
+def adjust_learning_rate(optimizer, epoch, learning_rate):
+    """Sets the learning rate to the initial LR\
+        decayed by 2 every 10 epochs after 30 epoches"""
+
+    if epoch >= 30 and epoch < 40:
+        lr = learning_rate / 2
+    elif epoch >= 40:
+        lr = learning_rate / 4
+    else:
+        lr = learning_rate
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr

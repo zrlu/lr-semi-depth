@@ -1,8 +1,7 @@
 .vscode
 __pycache__
-model
-data_scene_flow
-data_scene_flow_small
+model*
 outputs
 model
 .ipynb_checkpoints
+data

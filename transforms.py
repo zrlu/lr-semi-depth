@@ -4,71 +4,40 @@ import numpy as np
 
 
 
-def image_transforms(mode='train', augment_parameters=[0.8, 1.2, 0.5, 2.0, 0.8, 1.2],
+def image_transforms(augment_parameters=[0.8, 1.2, 0.5, 2.0, 0.8, 1.2],
                      do_augmentation=True, transformations=None,  size=(256, 512)):
-    if mode == 'train':
-        data_transform = transforms.Compose([
-            ResizeImage(train=True, size=size),
-            RandomFlip(do_augmentation),
-            ToTensor(train=True),
-            AugmentImagePair(augment_parameters, do_augmentation)
-        ])
-        return data_transform
-    elif mode == 'test':
-        data_transform = transforms.Compose([
-            ResizeImage(train=False, size=size),
-            ToTensor(train=False),
-            DoTest(),
-        ])
-        return data_transform
-    elif mode == 'custom':
-        data_transform = transforms.Compose(transformations)
-        return data_transform
-    else:
-        print('Wrong mode')
+    data_transform = transforms.Compose([
+        ResizeImage(size=size),
+        RandomFlip(do_augmentation),
+        ToTensor(),
+        AugmentImagePair(augment_parameters, do_augmentation)
+    ])
+    return data_transform
 
 
 class ResizeImage(object):
-    def __init__(self, train=True, size=(256, 512)):
-        self.train = train
+    def __init__(self, size=(256, 512)):
         self.transform = transforms.Resize(size)
 
     def __call__(self, sample):
-        if self.train:
-            left_image = sample['left_image']
-            right_image = sample['right_image']
-            new_right_image = self.transform(right_image)
-            new_left_image = self.transform(left_image)
-            sample = {'left_image': new_left_image, 'right_image': new_right_image}
-        else:
-            left_image = sample
-            new_left_image = self.transform(left_image)
-            sample = new_left_image
+        left_image = sample['left_image']
+        right_image = sample['right_image']
+        new_right_image = self.transform(right_image)
+        new_left_image = self.transform(left_image)
+        sample = {'left_image': new_left_image, 'right_image': new_right_image}
         return sample
 
 
-class DoTest(object):
-    def __call__(self, sample):
-        new_sample = torch.stack((sample, torch.flip(sample, [2])))
-        return new_sample
-
-
 class ToTensor(object):
-    def __init__(self, train):
-        self.train = train
+    def __init__(self):
         self.transform = transforms.ToTensor()
 
     def __call__(self, sample):
-        if self.train:
-            left_image = sample['left_image']
-            right_image = sample['right_image']
-            new_right_image = self.transform(right_image)
-            new_left_image = self.transform(left_image)
-            sample = {'left_image': new_left_image,
-                      'right_image': new_right_image}
-        else:
-            left_image = sample
-            sample = self.transform(left_image)
+        left_image = sample['left_image']
+        right_image = sample['right_image']
+        new_right_image = self.transform(right_image)
+        new_left_image = self.transform(left_image)
+        sample = {'left_image': new_left_image, 'right_image': new_right_image}
         return sample
 
 
