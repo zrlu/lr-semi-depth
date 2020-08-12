@@ -102,8 +102,11 @@ class MonodepthLoss(nn.modules.Module):
         return [torch.abs(smoothness_x[i]) + torch.abs(smoothness_y[i])
                 for i in range(self.n)]
 
-    def forward(self, disp_left_est, disp_right_est, left_pyramid, right_pyramid):
+    def forward(self, disp_est, image_pyramid, disp_gt=None):
         
+        left_pyramid, right_pyramid = image_pyramid
+        disp_left_est, disp_right_est = disp_est
+
         self.disp_left_est = disp_left_est
         self.disp_right_est = disp_right_est
         # Generate images
@@ -161,6 +164,10 @@ class MonodepthLoss(nn.modules.Module):
                            disp_right_smoothness[i])) / 2 ** i
                            for i in range(self.n)]
         disp_gradient_loss = sum(disp_left_loss + disp_right_loss)
+
+        # GT
+        if disp_gt is not None:
+            pass
 
         loss = image_loss + self.disp_gradient_w * disp_gradient_loss\
                + self.lr_w * lr_loss

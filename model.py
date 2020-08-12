@@ -65,7 +65,10 @@ class Model:
             torch.cuda.synchronize()
     
     def compute_loss(self):
-        loss_mono = self.criterion_mono(self.disps_RLL_est, self.disps_RLL_est, self.images_L, self.images_R)
+        loss_mono = self.criterion_mono(
+            (self.disps_RLL_est, self.disps_RLL_est),
+            (self.images_L, self.images_R)
+        )
         loss = loss_mono
         return loss   
 

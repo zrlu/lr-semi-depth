@@ -5,6 +5,14 @@ from torch.utils.data import DataLoader, ConcatDataset
 import torch.nn.functional as F
 import numpy as np
 from networks import conv
+from scipy import interpolate
+
+width_to_focal = dict()
+width_to_focal[1242] = 721.5377
+width_to_focal[1241] = 718.856
+width_to_focal[1224] = 707.0493
+width_to_focal[1238] = 718.3351
+
 
 def to_device(input, device):
     if torch.is_tensor(input):
@@ -69,3 +77,22 @@ def adjust_learning_rate(optimizer, epoch, learning_rate):
         lr = learning_rate
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
+
+def gt_depth_to_disp(depth):
+    height, width = depth.shape
+    mask = depth > 0
+    disp = 645.24 * 0.5707 / depth
+    return disp
+
+
+def fill_depth(depth):
+    width, height = depth.shape
+    x, y = np.arange(0, height), np.arange(0, width)
+    arr = np.ma.masked_equal(depth, 0.0)
+    xx, yy = np.meshgrid(x, y)
+    x1 = xx[~arr.mask]
+    y1 = yy[~arr.mask]
+    newarr = arr[~arr.mask]
+    inter = interpolate.griddata((x1, y1), newarr.ravel(), (xx, yy), method='linear')
+    return inter

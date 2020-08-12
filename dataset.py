@@ -1,19 +1,28 @@
 import os
 from PIL import Image
 
-from torch.utils.data import Dataset, DataLoader
-from transforms import image_transforms, ToTensor
+from torch.utils.data import Dataset, DataLoader, ConcatDataset, SubsetRandomSampler
+from transforms import image_transforms
+import random
 
 
 class KITTI(Dataset):
     def __init__(self, root_dir, transform=None):
-        left_dir = os.path.join(root_dir, 'image_2/')
-        self.left_paths = sorted([os.path.join(left_dir, fname) for fname\
-                           in os.listdir(left_dir)])
-        right_dir = os.path.join(root_dir, 'image_3/')
-        self.right_paths = sorted([os.path.join(right_dir, fname) for fname\
-                            in os.listdir(right_dir)])
-        assert len(self.right_paths) == len(self.left_paths)
+        left_dir = os.path.join(root_dir, 'image_02/data')
+        left_fns =  set([fname for fname in os.listdir(left_dir)])
+        right_dir = os.path.join(root_dir, 'image_03/data')
+        right_fns = set([fname for fname in os.listdir(right_dir)])
+        left_depth_dir = os.path.join(root_dir, 'proj_depth/groundtruth/image_02')
+        left_path_fns =  set([fname for fname in os.listdir(left_depth_dir)])
+        right_depth_dir = os.path.join(root_dir, 'proj_depth/groundtruth/image_03')
+        right_path_fns = set([fname for fname in os.listdir(right_depth_dir)])
+        fns = left_fns & right_fns & left_path_fns & right_path_fns
+        fns = random.sample(fns, 1)
+        self.left_paths = sorted([os.path.join(left_dir, fname) for fname in fns])
+        self.right_paths = sorted([os.path.join(right_dir, fname) for fname in fns])
+        self.left_depth_paths = sorted([os.path.join(left_depth_dir, fname) for fname in fns])
+        self.right_depth_paths = sorted([os.path.join(right_depth_dir, fname) for fname in fns])
+        assert len(self.right_paths) == len(self.left_paths) == len(self.left_depth_paths) == len(self.right_depth_paths)
         self.transform = transform
 
     def __len__(self):
@@ -22,8 +31,9 @@ class KITTI(Dataset):
     def __getitem__(self, idx):
         left_image = Image.open(self.left_paths[idx])
         right_image = Image.open(self.right_paths[idx])
-        sample = {'left_image': left_image, 'right_image': right_image}
-
+        left_depth = Image.open(self.left_depth_paths[idx])
+        right_depth = Image.open(self.right_depth_paths[idx])
+        sample = [left_image, right_image, left_depth, right_depth]
         if self.transform:
             sample = self.transform(sample)
             return sample
@@ -37,9 +47,9 @@ def prepare_dataloader(data_directory, augment_parameters,
         augment_parameters=augment_parameters,
         do_augmentation=do_augmentation,
         size = size)
-    dataset = KITTI(data_directory, transform=data_transform)
+    dataset = ConcatDataset([KITTI(os.path.join(data_directory, data_dir), transform=data_transform) for data_dir in os.listdir(data_directory)])
     n_img = len(dataset)
-    print('Use a dataset with', n_img, 'images')
+    print('Use a dataset with', n_img, 'instances')
     loader = DataLoader(dataset, batch_size=batch_size,
                         shuffle=shuffle, num_workers=num_workers,
                         pin_memory=True)
