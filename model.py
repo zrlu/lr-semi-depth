@@ -7,10 +7,13 @@ from networks import Resnet50_md
 from loss import Loss
 from torch.utils.data import DataLoader, ConcatDataset
 from dataset import KITTI, prepare_dataloader
-from os import path, makedirs
+from os import path, makedirs, listdir
 from utils import warp_left, warp_right, to_device, scale_pyramid
 import numpy as np
 from itertools import chain
+from torchvision import transforms
+from PIL import Image
+import cv2
 
 class Model:
 
@@ -136,6 +139,29 @@ class Model:
             if best:
                 name += '.best'
             self.nets[i].load_state_dict(torch.load(self.path_for(name)))
+
+
+    def eval(self, eval_dir):
+        self.net0.eval()
+        with torch.no_grad():
+            img_dir = path.join(eval_dir, 'training', 'image_2')
+            fns = listdir(img_dir)
+            N = len(fns)
+            disps = np.zeros((N, 375, 1242), dtype=np.float32)
+            resize = transforms.Resize((self.input_height, self.input_width))
+            to_tensor = transforms.ToTensor()
+            for idx, fn in enumerate(fns):
+                fp = path.join(img_dir, fn)
+                im = Image.open(fp)
+                im = resize(im)
+                im = to_tensor(im).to(self.device)
+                im = torch.unsqueeze(im, 0)
+                disp = self.net0(im)
+                disp_est = disp[0].cpu().numpy()[0, 0, :, :]
+                disp_est = cv2.resize(disp_est, (1242, 375), interpolation=cv2.INTER_LINEAR)
+                disps[idx] = disp_est
+            return disps
+
 
     def test(self, epoch, save=False):
 
