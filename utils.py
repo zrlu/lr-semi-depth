@@ -74,4 +74,4 @@ def depth2disp(depth):
     y1 = yy[~arr.mask]
     newarr = arr[~arr.mask]
     inter = interpolate.griddata((x1, y1), newarr.ravel(), (xx, yy), method='linear')
-    return 359.7176277195809831 * 0.54 / inter
+    return 721.5377 * 0.54 / inter

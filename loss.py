@@ -66,7 +66,7 @@ class Loss(nn.modules.Module):
     def sup_loss(self, disp_est, depth_gt):
         _, _, h, w = depth_gt.shape
         disp_est = nn.functional.interpolate(disp_est, size=(h, w), mode='bilinear', align_corners=True)
-        depth_est = 359.7176277195809831 * 0.54 / disp_est
+        depth_est = 721.5377 * 0.54 / disp_est
         masks = depth_gt > 0
         absdiff = masks * torch.abs(depth_est - depth_gt)
         delta = 0.2*torch.max(absdiff).item()
