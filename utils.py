@@ -65,28 +65,7 @@ def scale_pyramid(img):
     return scaled_imgs
 
 
-def adjust_learning_rate(optimizer, epoch, learning_rate):
-    """Sets the learning rate to the initial LR\
-        decayed by 2 every 10 epochs after 30 epoches"""
-
-    if epoch >= 30 and epoch < 40:
-        lr = learning_rate / 2
-    elif epoch >= 40:
-        lr = learning_rate / 4
-    else:
-        lr = learning_rate
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
-
-
-def gt_depth_to_disp(depth):
-    height, width = depth.shape
-    mask = depth > 0
-    disp = 645.24 * 0.5707 / depth
-    return disp
-
-
-def fill_depth(depth):
+def depth2disp(depth):
     width, height = depth.shape
     x, y = np.arange(0, height), np.arange(0, width)
     arr = np.ma.masked_equal(depth, 0.0)
@@ -95,4 +74,4 @@ def fill_depth(depth):
     y1 = yy[~arr.mask]
     newarr = arr[~arr.mask]
     inter = interpolate.griddata((x1, y1), newarr.ravel(), (xx, yy), method='linear')
-    return inter
+    return 359.7176277195809831 * 0.54 / inter

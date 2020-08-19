@@ -92,8 +92,8 @@ class upconv(nn.Module):
 class get_disp(nn.Module):
     def __init__(self, num_in_layers):
         super(get_disp, self).__init__()
-        self.conv1 = nn.Conv2d(num_in_layers, 2, kernel_size=3, stride=1)
-        self.normalize = nn.BatchNorm2d(2)
+        self.conv1 = nn.Conv2d(num_in_layers, 1, kernel_size=3, stride=1)
+        self.normalize = nn.BatchNorm2d(1)
         self.sigmoid = torch.nn.Sigmoid()
 
     def forward(self, x):
@@ -102,27 +102,6 @@ class get_disp(nn.Module):
         x = self.conv1(F.pad(x, p2d))
         x = self.normalize(x)
         return 0.3 * self.sigmoid(x)
-
-
-class Discriminator(nn.Module):
-
-    def __init__(self, num_in_layers):
-        super(Discriminator, self).__init__()
-        self.h0 = conv(num_in_layers, 64, 4, 2, activation_fn=F.relu)
-        self.h1 = conv(64, 128, 4, 2, activation_fn=F.relu)
-        self.h2 = conv(128, 256, 4, 2, activation_fn=F.relu)
-        self.h3 = conv(256, 512, 4, 1, activation_fn=F.relu)
-        self.h4 = conv(512, 1, 4, 1)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        x = self.h0(x)
-        x = self.h1(x)
-        x = self.h2(x)
-        x = self.h3(x)
-        x = self.h4(x)
-        x = self.sigmoid(x)
-        return x
 
 
 class Resnet50_md(nn.Module):
@@ -148,15 +127,15 @@ class Resnet50_md(nn.Module):
         self.disp4_layer = get_disp(128)
 
         self.upconv3 = upconv(128, 64, 3, 2)
-        self.iconv3 = conv(64+64+2, 64, 3, 1)
+        self.iconv3 = conv(64+64+1, 64, 3, 1)
         self.disp3_layer = get_disp(64)
 
         self.upconv2 = upconv(64, 32, 3, 2)
-        self.iconv2 = conv(32+64+2, 32, 3, 1)
+        self.iconv2 = conv(32+64+1, 32, 3, 1)
         self.disp2_layer = get_disp(32)
 
         self.upconv1 = upconv(32, 16, 3, 2)
-        self.iconv1 = conv(16+2, 16, 3, 1)
+        self.iconv1 = conv(16+1, 16, 3, 1)
         self.disp1_layer = get_disp(16)
 
         for m in self.modules():

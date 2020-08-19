@@ -1,17 +1,13 @@
 import torch
 import torchvision.transforms as transforms
 import numpy as np
-from utils import gt_depth_to_disp, fill_depth
 from PIL import Image
-
 
 
 def image_transforms(augment_parameters=[0.8, 1.2, 0.5, 2.0, 0.8, 1.2],
                      do_augmentation=True,  size=(256, 512)):
     data_transform = transforms.Compose([
-        InterpolateDepth(),
-        DepthToDisparity(),
-        Resize(size=size),
+        ResizeImage(size=size),
         RandomFlip(do_augmentation),
         ToTensor(),
         AugmentImagePair(augment_parameters, do_augmentation)
@@ -19,29 +15,7 @@ def image_transforms(augment_parameters=[0.8, 1.2, 0.5, 2.0, 0.8, 1.2],
     return data_transform
 
 
-class InterpolateDepth(object):
-    def __init__(self):
-        pass
-
-    def __call__(self, sample):
-        i0, i1, d0, d1 = sample
-        d0 = fill_depth(np.asarray(d0))
-        d1 = fill_depth(np.asarray(d1))
-        return i0, i1, d0, d1
-
-
-class DepthToDisparity(object):
-    def __init__(self):
-        pass
-
-    def __call__(self, sample):
-        i0, i1, d0, d1 = sample
-        d0 = gt_depth_to_disp(d0)
-        d1 = gt_depth_to_disp(d1)
-        return i0, i1, d0, d1
-
-
-class Resize(object):
+class ResizeImage(object):
     def __init__(self, size=(256, 512)):
         self.transform = transforms.Resize(size)
 
@@ -49,10 +23,6 @@ class Resize(object):
         i0, i1, d0, d1 = sample
         i0 = self.transform(i0)
         i1 = self.transform(i1)
-        d0 = Image.fromarray(d0)
-        d1 = Image.fromarray(d1)
-        d0 = self.transform(d0)
-        d1 = self.transform(d1)
         return i0, i1, d0, d1
 
 

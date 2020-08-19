@@ -5,7 +5,6 @@ from torch.utils.data import Dataset, DataLoader, ConcatDataset, SubsetRandomSam
 from transforms import image_transforms
 import random
 
-
 class KITTI(Dataset):
     def __init__(self, root_dir, transform=None):
         left_dir = os.path.join(root_dir, 'image_02/data')
@@ -17,7 +16,7 @@ class KITTI(Dataset):
         right_depth_dir = os.path.join(root_dir, 'proj_depth/groundtruth/image_03')
         right_path_fns = set([fname for fname in os.listdir(right_depth_dir)])
         fns = left_fns & right_fns & left_path_fns & right_path_fns
-        fns = random.sample(fns, 1)
+        # fns = random.sample(fns, min(len(fns), 5))
         self.left_paths = sorted([os.path.join(left_dir, fname) for fname in fns])
         self.right_paths = sorted([os.path.join(right_dir, fname) for fname in fns])
         self.left_depth_paths = sorted([os.path.join(left_depth_dir, fname) for fname in fns])
@@ -40,9 +39,8 @@ class KITTI(Dataset):
         else:
             return sample
 
-
 def prepare_dataloader(data_directory, augment_parameters,
-                       do_augmentation, batch_size, size, num_workers, shuffle=True):
+                       do_augmentation, batch_size, size, num_workers, shuffle=True, drop_last=True):
     data_transform = image_transforms(
         augment_parameters=augment_parameters,
         do_augmentation=do_augmentation,
@@ -50,7 +48,10 @@ def prepare_dataloader(data_directory, augment_parameters,
     dataset = ConcatDataset([KITTI(os.path.join(data_directory, data_dir), transform=data_transform) for data_dir in os.listdir(data_directory)])
     n_img = len(dataset)
     print('Use a dataset with', n_img, 'instances')
+    print('Batch size', batch_size)
+    print('Drop last', drop_last)
     loader = DataLoader(dataset, batch_size=batch_size,
+                        drop_last=drop_last,
                         shuffle=shuffle, num_workers=num_workers,
                         pin_memory=True)
     return n_img, loader

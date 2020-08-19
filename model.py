@@ -3,12 +3,12 @@ import time
 import torch
 import numpy as np
 import torch.optim as optim
-from networks import Resnet50_md, Discriminator
-from loss import MonodepthLoss
+from networks import Resnet50_md
+from loss import Loss
 from torch.utils.data import DataLoader, ConcatDataset
 from dataset import KITTI, prepare_dataloader
 from os import path, makedirs
-from utils import warp_left, warp_right, to_device, scale_pyramid, adjust_learning_rate
+from utils import warp_left, warp_right, to_device, scale_pyramid
 import numpy as np
 from itertools import chain
 
@@ -16,21 +16,27 @@ class Model:
 
     def __init__(self, batch_size=4, input_channels=3, use_multiple_gpu=False,
                        learning_rate=1e-4,
+                       loss_weights=[1.0,1.0,1.0,1.0],
                        model_path='model', device='cuda:0', train_dataset_dir='data_scene_flow/training', 
                        val_dataset_dir='data_scene_flow/testing', num_workers=4, do_augmentation=False,
                        output_directory='outputs',
                        input_height=256, input_width=512, augment_parameters=[0.8, 1.2, 0.5, 2.0, 0.8, 1.2]):
 
+        self.loss_weights = loss_weights
         self.batch_size = batch_size
         self.input_channels = input_channels
         self.model_path = model_path
         self.device = device
         self.use_multiple_gpu = use_multiple_gpu
 
-        self.net = Resnet50_md(self.input_channels).to(self.device)
+        self.net0 = Resnet50_md(3).to(self.device)
+        self.net1 = Resnet50_md(3).to(self.device)
+        self.nets = [self.net0, self.net1]
+        self.net_names = ['net0', 'net1']
 
         if self.use_multiple_gpu:
-            self.net = torch.nn.DataParallel(self.net)
+            self.net0 = torch.nn.DataParallel(self.net1)
+            self.net1 = torch.nn.DataParallel(self.net1)
 
         self.learning_rate=learning_rate
         self.input_height = input_height
@@ -42,75 +48,71 @@ class Model:
         self.num_workers = num_workers
         self.do_augmentation = do_augmentation
 
-        self.criterion_mono = MonodepthLoss()
+        self.criterion = Loss().to(self.device)
         
-        self.optimizer = optim.Adam(
-            chain(
-                self.net.parameters()
-            ),
-            lr=self.learning_rate
-        )
-        self.val_n_img, self.val_loader = prepare_dataloader(self.val_dataset_dir, self.augment_parameters,
+        self.optimizer = optim.Adam(chain(self.net0.parameters(), self.net0.parameters()), lr=self.learning_rate)
+        self.val_n_img, self.val_loader = prepare_dataloader(self.val_dataset_dir,
+                                            self.augment_parameters,
                                             False, self.batch_size,
                                             (self.input_height, self.input_width),
-                                            self.num_workers, shuffle=False)
+                                            self.num_workers, shuffle=False, drop_last=True)
 
         self.n_img, self.loader = prepare_dataloader(self.train_dataset_dir,
-                                                    self.augment_parameters,
-                                                    self.do_augmentation, self.batch_size,
-                                                    (self.input_height, self.input_width),
-                                                    self.num_workers)
+                                            self.augment_parameters,
+                                            self.do_augmentation, self.batch_size,
+                                            (self.input_height, self.input_width),
+                                            self.num_workers, drop_last=True)
         self.output_directory = output_directory
         if 'cuda' in self.device:
             torch.cuda.synchronize()
-    
-    def compute_loss(self):
-        loss_mono = self.criterion_mono(
-            (self.disps_RLL_est, self.disps_RLL_est),
-            (self.images_L, self.images_R)
-        )
-        loss = loss_mono
-        return loss   
 
 
-    def compute(self, left, right):
-        self.images_L = scale_pyramid(left)
-        self.images_R = scale_pyramid(right)
-        self.disps_RL = self.net(left)
+    def compute(self, data):
+        img_left, img_right, depth_gt_left, depth_gt_right = data
+        img_pyramid_left = scale_pyramid(img_left)
+        img_pyramid_right = scale_pyramid(img_right)
+        disp_pyramid_est_left = self.net0(img_left)
+        disp_pyramid_est_right = self.net1(img_right)
+        disp_est_left = disp_pyramid_est_left[0]
+        disp_est_right = disp_pyramid_est_right[0]
+        disps_est = [disp_est_left, disp_est_right]
+        img_est_left = warp_left(img_right, disp_est_left)
+        img_est_right = warp_right(img_left, disp_est_right)
+        img_est_pyramid_left = [warp_left(img_pyramid_right[i], disp_pyramid_est_left[i]) for i in range(4)]
+        img_est_pyramid_right = [warp_right(img_pyramid_left[i], disp_pyramid_est_right[i]) for i in range(4)]
 
-        self.disps_RLR_est = [d[:, 1, :, :].unsqueeze(1) for d in self.disps_RL]
-        self.disps_RLL_est = [d[:, 0, :, :].unsqueeze(1) for d in self.disps_RL]
+        img_pyramids = [img_pyramid_left, img_pyramid_right]
+        img_est_pyramids = [img_est_pyramid_left, img_est_pyramid_right]
+        disp_est_pyramids = [disp_pyramid_est_left, disp_pyramid_est_right]
+        depths_gt = [depth_gt_left, depth_gt_right]
 
-        self.images_R_est = [warp_right(self.images_L[i], self.disps_RLR_est[i]) for i in range(4)]
-        self.images_L_est = [warp_right(self.images_L[i], self.disps_RLR_est[i]) for i in range(4)]
+        return [img_pyramids, img_est_pyramids, disp_est_pyramids, depths_gt]
         
 
     def train(self, epoch):
-
-        adjust_learning_rate(self.optimizer, epoch, self.learning_rate)
         
         c_time = time.time()
-        running_loss = 0.0
-        
-        self.net.train()
+        running_losses = np.zeros(4)
+
+        self.net0.train()
+        self.net1.train()
 
         for data in self.loader:
             data = to_device(data, self.device)
-            left, right= data['left_image'], data['right_image']
-
             self.optimizer.zero_grad()
-            self.compute(left, right)
-            loss = self.compute_loss()
+            out = self.compute(data)
+            losses = self.criterion(out, epoch, self.loss_weights)
+            loss = sum(losses)
             loss.backward()
-            running_loss += loss.item()
+            running_losses += np.array([l.item() for l in losses])
             self.optimizer.step()
 
-        running_loss /= self.n_img / self.batch_size
+        running_losses /= self.n_img / self.batch_size
         
         self.save()
         print(
             'Epoch: {}'.format(str(epoch).rjust(3, ' ')),
-            'G: {:.3f}'.format(running_loss),
+            'G: {}'.format(running_losses),
             'Time: {:.2f}s'.format(time.time() - c_time)
         )
 
@@ -121,83 +123,69 @@ class Model:
     def save(self, best=False):
         if not path.exists(self.model_path):
             makedirs(self.model_path, exist_ok=True)
-        if best:
-            torch.save(self.net.state_dict(), self.path_for('net.nn.best'))
-        else:
-            torch.save(self.net.state_dict(), self.path_for('net.nn'))
+        for i, net in enumerate(self.nets):
+            name = self.net_names[i]
+            if best:
+                name += '.best'
+            torch.save(self.nets[i].state_dict(), self.path_for(name))
 
     def load(self, best=False):
         print('load', 'best', best)
-        if best:
-            self.net.load_state_dict(torch.load(self.path_for('net.nn.best')))
-        else:
+        for i, net in enumerate(self.nets):
+            name = self.net_names[i]
+            if best:
+                name += '.best'
+            self.nets[i].load_state_dict(torch.load(self.path_for(name)))
 
-            self.net.load_state_dict(torch.load(self.path_for('net.nn')))
-
-    def test(self):
+    def test(self, epoch, save=False):
 
         c_time = time.time()
 
-        self.net.eval()
+        self.net0.eval()
 
-        running_val_loss = 0.0
+        running_val_losses = np.zeros(4)
 
-        disparities_R = np.zeros((self.n_img, self.input_height, self.input_width), dtype=np.float32)
-        images_L = np.zeros((self.n_img, 3, self.input_height, self.input_width), dtype=np.float32)
-        images_R = np.zeros((self.n_img, 3, self.input_height, self.input_width), dtype=np.float32)
-        images_est_R = np.zeros((self.n_img, 3, self.input_height, self.input_width), dtype=np.float32)
+        N = self.val_n_img
 
-        ref_img = None
-
-        # RMSE = 0.0
-        # RMSE_log = 0.0
-        # AbsRel = 0.0
-        # SqrRel = 0.0
+        disparities_L = np.zeros((N, self.input_height, self.input_width), dtype=np.float32)
+        images_L = np.zeros((N, 3, self.input_height, self.input_width), dtype=np.float32)
+        gt_L = np.zeros((N, 375, 1242), dtype=np.float32)
 
         with torch.no_grad():
-            for i, data in enumerate(self.val_loader):
-                
+            for i, data in enumerate(self.val_loader):              
                 data = to_device(data, self.device)
-                left, right= data['left_image'], data['right_image']
+                out = self.compute(data)
+                losses = self.criterion(out, epoch, self.loss_weights)
+                loss = sum(losses)
+                running_val_losses += np.array([l.item() for l in losses])
 
-                self.compute(left, right)
-                loss = self.compute_loss()
-                running_val_loss += loss.item()
+                left = out[0][0][0]
+                right = out[0][1][0]
+                disp_est_left = out[2][0][0]
+                gt = out[3][0][:, 0, :, :]
+                DR = disp_est_left.cpu().numpy()[:, 0, :, :]
 
-                DR = self.disps_RLR_est[0].cpu().numpy()[:, 0, :, :]
                 ndata, _, _ = DR.shape
-                disparities_R[i*self.batch_size:i*self.batch_size+ndata] = DR
-                images_est_R[i*self.batch_size:i*self.batch_size+ndata] = warp_right(left, self.disps_RLR_est[0]).cpu().numpy()
-                images_L[i*self.batch_size:i*self.batch_size+ndata] = left.cpu().numpy()
-                images_R[i*self.batch_size:i*self.batch_size+ndata] = right.cpu().numpy()
+                start = i*self.batch_size
+                end = i*self.batch_size + ndata
 
-                # RMSE += torch.sqrt(torch.mean((left - warp_right(left, self.disps_RLR_est[0]))**2, dim=[2,3])).sum(dim=[0,1])
-                # RMSE_log += torch.sqrt(torch.mean((torch.log(left) - torch.log(warp_right(left, self.disps_RLR_est[0])))**2, dim=[2,3])).sum(dim=[0,1])
-                # AbsRel += torch.mean(torch.abs(left - warp_right(left, self.disps_RLR_est[0])) / left, dim=[2,3]).sum(dim=[0,1])
-                # SqrRel += torch.mean((left - warp_right(left, self.disps_RLR_est[0])**2) / left, dim=[2,3]).sum(dim=[0,1])
+                disparities_L[start:end] = DR
+                gt_L[start:end] = gt.cpu().numpy()
+                images_L[start:end] = left.cpu().numpy()
 
-            # RMSE /= self.val_n_img / self.batch_size
-            # RMSE_log /= self.val_n_img / self.batch_size
-            # AbsRel /= self.val_n_img / self.batch_size
-            # SqrRel /= self.val_n_img / self.batch_size
-            # print('RMSE', RMSE)
-            # print('RMSE_log', RMSE_log)
-            # print('AbsRel', AbsRel)
-            # print('SqrRel', SqrRel)
-
-
-            running_val_loss /= self.val_n_img / self.batch_size
+            running_val_losses /= self.val_n_img / self.batch_size
+            running_val_loss = sum(running_val_losses)
 
             model_saved = '[*]'
-            if running_val_loss < self.best_val_loss:
+            if save and running_val_loss < self.best_val_loss:
                 self.save(True)
                 self.best_val_loss = running_val_loss
                 model_saved = '[S]'
             print(
                 '      Test',
-                'G: {:.3f}({:.3f})'.format(running_val_loss, self.best_val_loss),
+                'G: {} {:.3f}({:.3f})'.format(running_val_losses, running_val_loss, self.best_val_loss),
                 'Time: {:.2f}s'.format(time.time() - c_time),
                 model_saved
             )
         
-        return disparities_R, images_L, images_R, images_est_R
+        return disparities_L, images_L, gt_L
